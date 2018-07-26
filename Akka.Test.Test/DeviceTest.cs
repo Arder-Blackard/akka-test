@@ -1,9 +1,11 @@
-﻿using Shouldly;
+﻿using System;
+using Akka.Actor;
+using Shouldly;
 using Xunit;
 
 namespace Akka.Test.Test
 {
-    public class DeviceTest : TestKit.Xunit2.TestKit
+    public sealed class DeviceTest : TestKit.Xunit2.TestKit
     {
         #region Public methods
 
@@ -34,6 +36,30 @@ namespace Akka.Test.Test
             var response = probe.ExpectMsg<RespondTemperature>();
             response.RequestId.ShouldBe( expected: 44 );
             response.Value.ShouldBe( expected: 78 );
+        }
+
+        [Fact]
+        public void Device_actor_must_reply_to_registration_requests()
+        {
+            var probe = CreateTestProbe();
+            var deviceActor = Sys.ActorOf( Device.Props( "Group1", "Device1" ) );
+
+            deviceActor.Tell( new RequestTrackDevice( "Group1", "Device1" ), probe.Ref );
+            probe.ExpectMsg<DeviceRegistered>();
+            probe.LastSender.ShouldBe( deviceActor );
+        }
+
+        [Fact]
+        public void Device_actor_must_ignore_wrong_registration_requests()
+        {
+            var probe = CreateTestProbe();
+            var deviceActor = Sys.ActorOf( Device.Props( "Group1", "Device1" ) );
+
+            deviceActor.Tell( new RequestTrackDevice( "Group1", "WrongDevice" ), probe.Ref );
+            probe.ExpectNoMsg( TimeSpan.FromMilliseconds( value: 500 ) );
+
+            deviceActor.Tell( new RequestTrackDevice( "WrongGroup", "Device1" ), probe.Ref );
+            probe.ExpectNoMsg( TimeSpan.FromMilliseconds( value: 500 ) );
         }
 
         #endregion

@@ -15,7 +15,6 @@ namespace Akka.Test
 
         #region Initialization
 
-        /// <inheritdoc />
         public ReadTemperature( long requestId )
         {
             RequestId = requestId;
@@ -36,7 +35,6 @@ namespace Akka.Test
 
         #region Initialization
 
-        /// <inheritdoc />
         public RespondTemperature( long requestId, double? value )
         {
             RequestId = requestId;
@@ -58,7 +56,6 @@ namespace Akka.Test
 
         #region Initialization
 
-        /// <inheritdoc />
         public RecordTemperature( long requestId, double? value )
         {
             RequestId = requestId;
@@ -82,6 +79,45 @@ namespace Akka.Test
         public TemperatureRecorded( long requestId )
         {
             RequestId = requestId;
+        }
+
+        #endregion
+    }
+
+    public sealed class RequestTrackDevice
+    {
+        #region Auto-properties
+
+        public string GroupId { get; }
+        public string DeviceId { get; }
+
+        #endregion
+
+
+        #region Initialization
+
+        public RequestTrackDevice( string groupId, string deviceId )
+        {
+            GroupId = groupId;
+            DeviceId = deviceId;
+        }
+
+        #endregion
+    }
+
+    public sealed class DeviceRegistered
+    {
+        #region Auto-properties
+
+        public static DeviceRegistered Instance { get; } = new DeviceRegistered();
+
+        #endregion
+
+
+        #region Initialization
+
+        private DeviceRegistered()
+        {
         }
 
         #endregion
@@ -122,6 +158,15 @@ namespace Akka.Test
                 case ReadTemperature readTemperature:
                     Sender.Tell( new RespondTemperature( readTemperature.RequestId, _lastTemperatureReading ) );
                     break;
+
+                case RequestTrackDevice request when request.GroupId == GroupId && request.DeviceId == DeviceId:
+                    Sender.Tell( DeviceRegistered.Instance );
+                    break;
+
+                case RequestTrackDevice request:
+                    _logger.Warning( "Ignoring incorrect TrackDevice request for {RequestGroupId}-{RequestDeviceId}. The actor is responsible for {GroupId}-{DeviceId}",
+                                     request.GroupId, request.DeviceId, GroupId, DeviceId );
+                    break;
             }
         }
 
@@ -153,7 +198,7 @@ namespace Akka.Test
         protected override void PreStart() => _logger.Info( "Device actor {GroupId}-{DeviceId} started", GroupId, DeviceId );
 
         /// <inheritdoc />
-        protected override void PostStop() => _logger.Info( "Device actor {GroupId}-{DeviceId} started", GroupId, DeviceId );
+        protected override void PostStop() => _logger.Info( "Device actor {GroupId}-{DeviceId} stopped", GroupId, DeviceId );
 
         #endregion
     }
