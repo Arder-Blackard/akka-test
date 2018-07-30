@@ -1,5 +1,6 @@
 ﻿using System;
 using Akka.Actor;
+using Akka.Configuration;
 using Serilog;
 
 namespace Akka.Test
@@ -26,6 +27,7 @@ namespace Akka.Test
             tester.Tell( "test" );
 
             Console.ReadLine();
+
         }
 
         #endregion

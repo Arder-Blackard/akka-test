@@ -24,7 +24,7 @@ namespace Akka.Test
                     _manager.Tell( new RequestTrackDevice("Group1", "Device1") );
                     break;
 
-                case DeviceRegistered response:
+                case DeviceRegistered _:
                     _logger.Info( "Device registered" );
                     break;
             }
