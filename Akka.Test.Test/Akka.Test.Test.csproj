@@ -2,10 +2,13 @@
 
   <PropertyGroup>
     <TargetFramework>netcoreapp2.1</TargetFramework>
+      <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Akka.TestKit.Xunit2" Version="1.3.8" />
+    <PackageReference Include="AutoFixture" Version="4.5.0" />
+    <PackageReference Include="AutoFixture.Xunit2" Version="4.5.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="15.8.0" />
     <PackageReference Include="Shouldly" Version="3.0.0" />
     <PackageReference Include="xunit" Version="2.4.0" />

@@ -1,18 +1,13 @@
 ﻿using System;
 using Akka.Actor;
-using Akka.Configuration;
 using Serilog;
 
 namespace Akka.Test
 {
     public static class Program
     {
-        #region Non-public methods
-
         private static void Main( string[] args )
         {
-            HoconTest.Run();
-
             Log.Logger = new LoggerConfiguration()
                          .MinimumLevel.Verbose()
                          .WriteTo.Console()
@@ -20,16 +15,41 @@ namespace Akka.Test
 
             Log.Logger.Information( "Go!" );
 
-            var system = ActorSystem.Create( "akka-test", "akka { loglevel=INFO,  loggers=[\"Akka.Logger.Serilog.SerilogLogger, Akka.Logger.Serilog\"]}");
+            var system = ActorSystem.Create( "akka-test",
+                                             @"
+akka { 
+    loglevel=DEBUG,  
+    stdout-loglevel = DEBUG
+    loggers=[""Akka.Logger.Serilog.SerilogLogger, Akka.Logger.Serilog""]}
+    actor {
+        debug {
+            receive = true
+            autoreceive = true
+            lifecycle = true
+            event-stream = true
+            unhandled = true
+            fsm = true
+            router-misconfiguration = true
+        }
+    }
+    log-dead-letters-during-shutdown = true
+    log-dead-letters = true
 
-            var manager = system.ActorOf( DeviceManager.Props() );
-            var tester = system.ActorOf( Tester.Props( manager ) );
-            tester.Tell( "test" );
+     actor.provider = cluster
+    remote {
+        dot-netty.tcp {
+            port = 8081
+            hostname = localhost
+        }
+    }
+    cluster {
+        seed-nodes = [""akka.tcp://ClusterSystem@localhost:8081""]
+    }
+}" );
+
+            
 
             Console.ReadLine();
-
         }
-
-        #endregion
     }
 }
