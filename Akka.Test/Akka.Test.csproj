@@ -1,13 +1,15 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>netcoreapp2.1</TargetFramework>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Akka" Version="1.3.8" />
     <PackageReference Include="Akka.Cluster" Version="1.3.8" />
+    <PackageReference Include="Akka.Cluster.Sharding" Version="1.3.8-beta66" />
     <PackageReference Include="Akka.Cluster.Tools" Version="1.3.8" />
     <PackageReference Include="Akka.Logger.Serilog" Version="1.3.6" />
     <PackageReference Include="Akka.Persistence" Version="1.3.8" />

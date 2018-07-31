@@ -7,6 +7,8 @@ namespace Akka.Test.Domain.Tasks
 {
     public sealed partial class Job : AggregateRoot<JobState>
     {
+        #region Properties
+
         protected override Func<DomainEvent, JobState> Factory => domainEvent =>
         {
             if ( domainEvent is JobProduced jobProduced )
@@ -23,11 +25,10 @@ namespace Akka.Test.Domain.Tasks
             throw new InvalidOperationException( "Invalid event" );
         };
 
-        public Job( string persistenceId ) : base( persistenceId )
-        {
-        }
+        #endregion
 
-        public static Props Props( string jobId ) => Actor.Props.Create( () => new Job( jobId ) );
+
+        #region Commands
 
         protected override void OnCommand( object command )
         {
@@ -41,7 +42,7 @@ namespace Akka.Test.Domain.Tasks
                     else
                     {
                         Raise( new JobProduced(
-                                   produceJob.JobId,
+                                   produceJob.TargetId,
                                    produceJob.Origin,
                                    produceJob.Priority,
                                    produceJob.SerializedScript,
@@ -63,5 +64,19 @@ namespace Akka.Test.Domain.Tasks
                     break;
             }
         }
+
+        #endregion
+
+
+        #region Initialization
+
+        #endregion
+
+
+        #region Public methods
+
+        public static Props Props() => Actor.Props.Create( () => new Job() );
+
+        #endregion
     }
 }

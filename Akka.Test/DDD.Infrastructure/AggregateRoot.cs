@@ -18,9 +18,9 @@ namespace Akka.Test.DDD.Infrastructure
 
         protected abstract Func<DomainEvent, TState> Factory { get; }
 
-        public AggregateRoot( string persistenceId )
+        public AggregateRoot()
         {
-            PersistenceId = persistenceId;
+            PersistenceId = Context.Parent.Path.Name + "-" + Self.Path.Name;
         }
 
         public void Raise<TEvent>( TEvent @event, Action<TEvent> handler = null ) where TEvent : DomainEvent

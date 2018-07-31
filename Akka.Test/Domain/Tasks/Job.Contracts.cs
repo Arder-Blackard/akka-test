@@ -5,17 +5,15 @@ namespace Akka.Test.Domain.Tasks
 {
     public sealed partial class Job
     {
-        public sealed class ProduceJob
+        public sealed class ProduceJob : Command
         {
-            public string JobId { get; }
             public string Origin { get; }
             public int Priority { get; }
             public string SerializedScript { get; }
             public Dictionary<string, string> Parameters { get; }
 
-            public ProduceJob( string jobId, string origin, int priority, string serializedScript, Dictionary<string, string> parameters )
+            public ProduceJob( string targetId, string origin, int priority, string serializedScript, Dictionary<string, string> parameters ) : base(targetId)
             {
-                JobId = jobId;
                 Origin = origin;
                 Priority = priority;
                 SerializedScript = serializedScript;
@@ -23,31 +21,27 @@ namespace Akka.Test.Domain.Tasks
             }
         }
 
-        public sealed class FailJob
+        public sealed class FailJob: Command
         {
-            public string JobId { get; }
             public string StatusText { get; }
             public IReadOnlyList<string> Notes { get; }
 
-            public FailJob( string jobId, string statusText, IReadOnlyList<string> notes )
+            public FailJob( string targetId, string statusText, IReadOnlyList<string> notes ): base(targetId)
             {
-                JobId = jobId;
                 StatusText = statusText;
                 Notes = notes;
             }
         }
 
-        public sealed class FinishScriptStep
+        public sealed class FinishScriptStep: Command
         {
-            public string JobId { get; }
             public string Status { get; }
             public string StatusText { get; }
             public IReadOnlyList<string> Notes { get; }
             public double Progress { get; }
 
-            public FinishScriptStep( string jobId, string status, string statusText, IReadOnlyList<string> notes, double progress )
+            public FinishScriptStep( string targetId, string status, string statusText, IReadOnlyList<string> notes, double progress ): base(targetId)
             {
-                JobId = jobId;
                 Status = status;
                 StatusText = statusText;
                 Notes = notes;

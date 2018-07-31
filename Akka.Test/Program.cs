@@ -1,22 +1,15 @@
 ﻿using System;
+using System.Threading.Tasks;
 using Akka.Actor;
+using Akka.Cluster.Sharding;
+using Akka.Test.Domain.Tasks;
 using Serilog;
 
 namespace Akka.Test
 {
     public static class Program
     {
-        private static void Main( string[] args )
-        {
-            Log.Logger = new LoggerConfiguration()
-                         .MinimumLevel.Verbose()
-                         .WriteTo.Console()
-                         .CreateLogger();
-
-            Log.Logger.Information( "Go!" );
-
-            var system = ActorSystem.Create( "akka-test",
-                                             @"
+        private const string Config = @"
 akka { 
     loglevel=DEBUG,  
     stdout-loglevel = DEBUG
@@ -35,7 +28,7 @@ akka {
     log-dead-letters-during-shutdown = true
     log-dead-letters = true
 
-     actor.provider = cluster
+    actor.provider = cluster
     remote {
         dot-netty.tcp {
             port = 8081
@@ -45,8 +38,26 @@ akka {
     cluster {
         seed-nodes = [""akka.tcp://ClusterSystem@localhost:8081""]
     }
-}" );
+}";
 
+        private static async Task Main( string[] args )
+        {
+            Log.Logger = new LoggerConfiguration()
+                         .MinimumLevel.Verbose()
+                         .WriteTo.Console()
+                         .CreateLogger();
+
+            Log.Logger.Information( "Go!" );
+
+            var system = ActorSystem.Create( "akka-test", Config);
+
+            var region = await ClusterSharding.Get( system )
+                                              .StartAsync( 
+                                                  "job-manager",
+                                                  Job.Props(), 
+                                                  ClusterShardingSettings.Create( system ), 
+                                                  new MessageExtractor()
+                             );
             
 
             Console.ReadLine();

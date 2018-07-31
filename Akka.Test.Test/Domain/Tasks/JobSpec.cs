@@ -44,6 +44,6 @@ namespace Akka.Test.Test.Domain.Tasks
             } );
         }
 
-        private IActorRef GetJobActor( string name ) => GetActor( Job.Props( AggregateRootId ), name );
+        private IActorRef GetJobActor( string name ) => GetActor( Job.Props(), name );
     }
 }
