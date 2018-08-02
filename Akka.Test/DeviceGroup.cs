@@ -224,7 +224,7 @@ namespace Akka.Test
             Requester = requester;
             Timeout = timeout;
             _queryTimeoutTimer = Context.System.Scheduler.ScheduleTellOnceCancelable( timeout, Self, CollectionTimeout.Instance, Self );
-            Become( WaitingForReplies( new Dictionary<string, ITemperatureValue>(), deviceMap.Keys.ToHashSet() ) );
+            Become( WaitingForReplies( new Dictionary<string, ITemperatureValue>(), new HashSet<IActorRef>( deviceMap.Keys ) ) );
         }
 
         #endregion

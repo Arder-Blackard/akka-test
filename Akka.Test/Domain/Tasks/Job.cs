@@ -35,7 +35,7 @@ namespace Akka.Test.Domain.Tasks
             switch ( command )
             {
                 case ProduceJob produceJob:
-                    if ( IsInitialized )
+                    if ( State != null )
                     {
                         throw new InvalidOperationException( "The job is already produced" );
                     }
@@ -75,7 +75,7 @@ namespace Akka.Test.Domain.Tasks
 
         #region Public methods
 
-        public static Props Props() => Actor.Props.Create( () => new Job() );
+        public static Props Props() => Actor.Props.Create<Job>();
 
         #endregion
     }
