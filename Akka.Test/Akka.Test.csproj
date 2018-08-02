@@ -7,6 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="DDD.Infrastructure\Exceptions\**" />
+    <EmbeddedResource Remove="DDD.Infrastructure\Exceptions\**" />
+    <None Remove="DDD.Infrastructure\Exceptions\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="akka-cluster.conf" />
     <None Remove="akka-persistence.conf" />
   </ItemGroup>
@@ -27,10 +33,6 @@
     <PackageReference Include="RestSharp" Version="106.3.1" />
     <PackageReference Include="Serilog" Version="2.7.1" />
     <PackageReference Include="Serilog.Sinks.Console" Version="3.1.1" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Folder Include="DDD.Infrastructure\Exceptions\" />
   </ItemGroup>
 
 </Project>
