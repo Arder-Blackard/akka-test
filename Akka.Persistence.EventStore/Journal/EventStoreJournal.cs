@@ -10,52 +10,35 @@ using EventStore.ClientAPI;
 using EventStore.ClientAPI.SystemData;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
-using Newtonsoft.Json.Linq;
 
-namespace Akka.Persistence.EventStore.Persistence
+namespace Akka.Persistence.EventStore.Journal
 {
-    public class EventStoreJournalSettings
+    public class EventStoreJournal : AsyncWriteJournal
     {
-        public static EventStoreJournalSettings Default = new EventStoreJournalSettings(
-            "tcp://tom-server:1113",
-            "test-o-matic",
-            "2wsx#EDC",
-            "akka-" );
 
-        public string Host { get; }
-        public string Username { get; }
-        public string Password { get; }
-        public string Prefix { get; }
 
-        /// <inheritdoc />
-        public EventStoreJournalSettings( string host, string username, string password, string prefix )
-        {
-            Host = host;
-            Username = username;
-            Password = password;
-            Prefix = prefix;
-        }
-    }
 
-    public class EventStoreJournalPlugin : AsyncWriteJournal
-    {
         /// <summary>
         ///     Header storing the event object CLR type.
         /// </summary>
         private const string EventClrTypeHeader = "EventClrType";
 
-        private static readonly JsonSerializerSettings SerializerSettings = new JsonSerializerSettings
+        private readonly EventStoreJournalSettings _settings;
+        private readonly JsonSerializerSettings _serializerSettings;
+
+        private Lazy<IEventStoreConnection> EventStoreConnection { get; set; }
+
+        public EventStoreJournal()
         {
-            Formatting = Formatting.None,
-            Converters = { new StringEnumConverter() }
-        };
+            var eventStorePersistence = EventStorePersistence.Get( Context.System );
+            _settings = eventStorePersistence.JournalSettings;
+            _serializerSettings = eventStorePersistence.SerializerSettings;
+        }
 
-        private readonly EventStoreJournalSettings _settings = EventStoreJournalSettings.Default;
-
-        private Lazy<IEventStoreConnection> EventStoreConnection { get; }
-
-        public EventStoreJournalPlugin()
+        /// <inheritdoc />
+        protected override void PreStart()
         {
+            base.PreStart();
             EventStoreConnection = new Lazy<IEventStoreConnection>( () =>
             {
                 var connectionSettings = ConnectionSettings.Create()
@@ -84,14 +67,14 @@ namespace Akka.Persistence.EventStore.Persistence
             var connection = EventStoreConnection.Value;
             var streamId = StreamIdFromPersistenceId(persistenceId);
 
-            var sliceStart = fromSequenceNr;
+            var sliceStart = fromSequenceNr - 1;
             StreamEventsSlice currentSlice;
 
             long ReadPageSize = 50;
             do
             {
-                var sliceCount = sliceStart + ReadPageSize <= toSequenceNr ? ReadPageSize : (int)(toSequenceNr - sliceStart + 1);
-                currentSlice = await connection.ReadStreamEventsForwardAsync(streamId, sliceStart, sliceCount, resolveLinkTos: false);
+                var sliceCount = sliceStart + ReadPageSize < toSequenceNr ? ReadPageSize : (toSequenceNr - sliceStart);
+                currentSlice = await connection.ReadStreamEventsForwardAsync(streamId, sliceStart, (int) sliceCount, resolveLinkTos: false);
 
                 if (currentSlice.Status == SliceReadStatus.StreamNotFound)
                 {
@@ -107,20 +90,11 @@ namespace Akka.Persistence.EventStore.Persistence
 
                 foreach ( var @event in currentSlice.Events )
                 {
-                    var (persistent, metadata) = Deserialize( @event.OriginalEvent );
-
-                }
-                //  Apply loaded events to the aggregate
-                if (aggregate == null)
-                {
-                    var firstEvent = DeserializeEvent<IAggregateEvent<TId>>(currentSlice.Events[0].OriginalEvent);
-                    aggregate = (TAggregate)ConstructAggregate((string)firstEvent.metadata.Property(AggregateClrTypeHeader).Value);
+                    var persistent = Deserialize( @event.OriginalEvent, context.Sender );
+                    recoveryCallback(persistent);
                 }
 
-                var aggregateEvents = currentSlice.Events.Select(@event => DeserializeEvent<IAggregateEvent<TId>>(@event.OriginalEvent).@event);
-                aggregate.LoadFromHistory(aggregateEvents);
-
-            } while (version >= currentSlice.NextEventNumber && !currentSlice.IsEndOfStream);
+            } while (currentSlice.NextEventNumber < toSequenceNr && !currentSlice.IsEndOfStream);
 
         }
 
@@ -134,7 +108,7 @@ namespace Akka.Persistence.EventStore.Persistence
             if ( slice.Status == EventReadStatus.NoStream || slice.Status == EventReadStatus.NotFound )
                 return 0;
 
-            return slice.EventNumber + 1;
+            return slice.Event.Value.OriginalEventNumber + 1;
         }
 
         /// <inheritdoc />
@@ -152,50 +126,55 @@ namespace Akka.Persistence.EventStore.Persistence
 
                 var events = group.SelectMany( message => from persistent in (IImmutableList<IPersistentRepresentation>) message.Payload
                                                           orderby persistent.SequenceNr
-                                                          select ToEventData(persistent )
+                                                          select ToEventData(persistent ))
                                   .ToArray();
 
-                return connection.AppendToStreamAsync( streamId, lowerSequenceId, events );
+                return connection.AppendToStreamAsync( streamId, lowerSequenceId - 2, events );
             } ).ToArray();
 
             return await Task.Factory.ContinueWhenAll( writeTasks, tasks => tasks.Select( t => t.IsFaulted ? TryUnwrapException( t.Exception ) : null ).ToImmutableList() );
         }
 
-        protected static (object data, JObject metadata) Deserialize( RecordedEvent eventStoreEvent )
+        private static Persistent Deserialize( RecordedEvent eventStoreEvent, IActorRef sender )
         {
-            var deserializedMetadata = JObject.Parse( Encoding.UTF8.GetString( eventStoreEvent.Metadata ) );
-            var eventClrTypeName = deserializedMetadata.Property( EventClrTypeHeader ).Value;
-            var deserializedData = JsonConvert.DeserializeObject( Encoding.UTF8.GetString( eventStoreEvent.Data ), Type.GetType( (string) eventClrTypeName ) );
+            var metadata = JsonConvert.DeserializeObject<EventMetadata>( Encoding.UTF8.GetString( eventStoreEvent.Metadata ) );
+            var payloadTypeName = metadata.PayloadType;
+            var type = Type.GetType( payloadTypeName );
+            var payload = JsonConvert.DeserializeObject( Encoding.UTF8.GetString( eventStoreEvent.Data ), type );
 
-            return (deserializedData, deserializedMetadata);
+
+            return new Persistent( payload, eventStoreEvent.EventNumber + 1, metadata.PersistenceId, metadata.Manifest, metadata.IsDeleted, sender, metadata.WriterGuid );
         }
 
         /// <summary>
-        ///     Converts an <paramref name="event" /> object to an EventStore representation.
+        ///     Converts a <paramref name="persistent" /> object to an EventStore representation.
         /// </summary>
-        /// <param name="eventId">A unique event identifier.</param>
-        /// <param name="event">An event object.</param>
-        /// <param name="headers">An event metadata headers.</param>
         /// <returns>An EventStore event representation ready to be written to a stream.</returns>
         protected EventData ToEventData( IPersistentRepresentation persistent )
         {
-            var json = JsonConvert.SerializeObject( persistent.Payload, SerializerSettings );
-            var data = Encoding.UTF8.GetBytes( json );
-            var eventHeaders = new Dictionary<string, object>( headers )
+            var json = JsonConvert.SerializeObject( persistent.Payload, _serializerSettings );
+            var jsonBytes = Encoding.UTF8.GetBytes( json );
+
+            var metadata = new EventMetadata
             {
-                [EventClrTypeHeader] = @event.GetType().AssemblyQualifiedName
+                Manifest = persistent.Manifest,
+                IsDeleted = persistent.IsDeleted,
+                PersistenceId = persistent.PersistenceId,
+                SequenceNr = persistent.SequenceNr,
+                WriterGuid = persistent.WriterGuid,
+                PayloadType = persistent.Payload.GetType().FullName
             };
 
-            var metadata = Encoding.UTF8.GetBytes( JsonConvert.SerializeObject( eventHeaders, SerializerSettings ) );
-            var typeName = GetEventTypeName( @event );
+            var metadataBytes = Encoding.UTF8.GetBytes( JsonConvert.SerializeObject( metadata, _serializerSettings ) );
+            var typeName = GetEventTypeName( persistent.Payload );
 
-            return new EventData( eventId, typeName, isJson: true, data: data, metadata: metadata );
+            return new EventData( Guid.NewGuid(), typeName, isJson: true, data: jsonBytes, metadata: metadataBytes );
         }
 
         /// <inheritdoc />
         protected override Task DeleteMessagesToAsync( string persistenceId, long toSequenceNr ) => throw new NotImplementedException();
 
-        private string StreamIdFromPersistenceId( string persistenceId ) => _settings.Prefix + persistenceId;
+        private string StreamIdFromPersistenceId( string persistenceId ) => _settings.Prefix + persistenceId.Replace( '/', '_' );
 
         private static string GetEventTypeName( object @event )
         {
@@ -204,6 +183,16 @@ namespace Akka.Persistence.EventStore.Persistence
             return char.IsUpper( firstChar )
                        ? char.ToLower( firstChar ) + typeName.Substring( startIndex: 1 )
                        : typeName;
+        }
+
+        private class EventMetadata
+        {
+            public string Manifest { get; set; }
+            public bool IsDeleted { get; set; }
+            public string PersistenceId { get; set; }
+            public long SequenceNr { get; set; }
+            public string WriterGuid { get; set; }
+            public string PayloadType { get; set; }
         }
     }
 }

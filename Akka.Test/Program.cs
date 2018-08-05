@@ -1,21 +1,21 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Reflection;
-using System.Resources;
 using System.Threading.Tasks;
 using Akka.Actor;
 using Akka.Cluster.Sharding;
 using Akka.Configuration;
+using Akka.Persistence.EventStore;
 using Akka.Persistence.MongoDb;
 using Akka.Test.Domain.Tasks;
-using MongoDB.Driver;
 using Serilog;
 
 namespace Akka.Test
 {
     public static class Program
     {
+        #region Constants
+
         private const string Config = @"
 mongodb.connection-string = ""mongodb://by1-woiisqa-02:27017/akka-test""        
 akka { 
@@ -32,6 +32,7 @@ akka {
         fsm = true
         router-misconfiguration = true
     }
+
     log-dead-letters-during-shutdown = true
     log-dead-letters = true
 
@@ -47,14 +48,20 @@ akka {
         journal.mongodb.connection-string = ${mongodb.connection-string}
         journal.mongodb.collection = ""EventJournal""
 
+        journal.plugin = ""akka.persistence.journal.eventstore""
+        journal.eventstore.host = ""tcp://tom-server:1113""
+        journal.eventstore.username = test-o-matic
+        journal.eventstore.password = ""2wsx#EDC""
+        journal.eventstore.prefix = akka-
+
         journal.auto-start-journals = []
 
         ###  Snapshot store plugins.  ###
         
         snapshot-store.plugin = ""akka.persistence.snapshot-store.local""
-        snapshot-store.plugin = ""akka.persistence.snapshot-store.mongodb""
-        snapshot-store.mongodb.connection-string = ${mongodb.connection-string}
-        snapshot-store.mongodb.collection = ""SnapshotStore""
+//        snapshot-store.plugin = ""akka.persistence.snapshot-store.mongodb""
+//        snapshot-store.mongodb.connection-string = ${mongodb.connection-string}
+//        snapshot-store.mongodb.collection = ""SnapshotStore""
         snapshot-store.auto-start-snapshot-stores = []        
     }
 
@@ -84,6 +91,11 @@ akka {
     }
 }";
 
+        #endregion
+
+
+        #region Non-public methods
+
         private static async Task Main( string[] args )
         {
             Log.Logger = new LoggerConfiguration()
@@ -93,84 +105,89 @@ akka {
 
             Log.Information( "Go!" );
 
-
-
-            var clusterConfig = ConfigurationFactory.FromResource("Akka.Test.akka-cluster.conf", typeof(Program).Assembly);
-            var persistenceConfig = ConfigurationFactory.FromResource("Akka.Test.akka-persistence.conf", typeof(Program).Assembly);
+            var clusterConfig = ConfigurationFactory.FromResource( "Akka.Test.akka-cluster.conf", typeof(Program).Assembly );
+            var persistenceConfig = ConfigurationFactory.FromResource( "Akka.Test.akka-persistence.conf", typeof(Program).Assembly );
             var shardingConfig = ClusterSharding.DefaultConfig();
 
             var config = ConfigurationFactory.ParseString( Config );
 
             config = config.WithFallback( shardingConfig )
+
                 // .WithFallback( clusterConfig )
                 // .WithFallback( persistenceConfig )
                 ;
 
             var v = config.GetConfig( "akka.actor.serializers" );
 
+            Log.Debug( "{Config}", config.ToString( includeFallback: true ) );
+            Log.Debug( "{Config}", shardingConfig.ToString( includeFallback: true ) );
 
-            Log.Debug( "{Config}", config.ToString( true ) );
-            Log.Debug( "{Config}", shardingConfig.ToString( true ) );
+            using ( var system = ActorSystem.Create( "akka-test", config ) )
+            {
 
-            var system = ActorSystem.Create( "akka-test", config );
+                // MongoDbPersistence.Get( system );
+                EventStorePersistence.Get( system );
 
-            MongoDbPersistence.Get( system );
+                var inbox = Inbox.Create( system );
 
-            var inbox = Inbox.Create( system );
+                var deviceManager = system.ActorOf( DeviceManager.Props() );
 
-            var deviceManager = system.ActorOf( DeviceManager.Props() );
+                inbox.Send( deviceManager, new RequestTrackDevice( "group", "device" ) );
 
-            inbox.Send( deviceManager, new RequestTrackDevice( "group", "device" ) );
+                var response = inbox.Receive();
 
-            var response = inbox.Receive();
+                var clusterSharding = ClusterSharding.Get( system );
+                var region = await clusterSharding
+                                 .StartAsync(
+                                     "job-manager",
+                                     Job.Props(),
+                                     ClusterShardingSettings.Create( system ),
+                                     new MessageExtractor()
+                                 );
 
-            var clusterSharding = ClusterSharding.Get( system );
-            var region = await clusterSharding
-                             .StartAsync(
-                                 "job-manager",
-                                 Job.Props(),
-                                 ClusterShardingSettings.Create( system ),
-                                 new MessageExtractor()
-                             );
+                // var collection = new MongoClient( "mongodb://by1-woiisqa-02:27017" ).GetDatabase( "akka-test" ).GetCollection<Dummy>( "dummy" );
+                // collection.InsertOne( new Dummy(region) );
+                //
+                // var dummy = collection.Find( d => true ).First();
 
+                inbox.Send( region,
+                            new Job.ProduceJob(
+                                "Job-001",
+                                "Author",
+                                priority: 4,
+                                "Whatever",
+                                new Dictionary<string, string>()
+                            )
+                );
 
-            // var collection = new MongoClient( "mongodb://by1-woiisqa-02:27017" ).GetDatabase( "akka-test" ).GetCollection<Dummy>( "dummy" );
-            // collection.InsertOne( new Dummy(region) );
-            //
-            // var dummy = collection.Find( d => true ).First();
+                var random = new Random();
+                var next = random.Next();
 
-            inbox.Send( region,
-                        new Job.ProduceJob(
-                            "Job-001",
-                            "Author",
-                            priority: 4,
-                            "Whatever",
-                            new Dictionary<string, string>()
-                        )
-            );
+                inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", $"Succeeded step {next}-1", new [] {"Whooo"}, progress: 0.1 ) );
+                Log.Information( "{@Response}", inbox.Receive( TimeSpan.FromHours( value: 1 ) ) );
 
-            inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", "Succeeded", new string [0], 0.1 ) );
-            Log.Information("{@Response}", inbox.Receive(TimeSpan.FromHours( 1 )));
-            inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", "Succeeded", new string [0], 0.1 ) );
-            Log.Information("{@Response}", inbox.Receive(TimeSpan.FromHours(1)));
-            inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", "Succeeded", new string [0], 0.1 ) );
-            Log.Information("{@Response}", inbox.Receive(TimeSpan.FromHours(1)));
-            inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", "Succeeded", new string [0], 0.1 ) );
-            Log.Information("{@Response}", inbox.Receive(TimeSpan.FromHours(1)));
-            inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", "Succeeded", new string [0], 0.1 ) );
-            Log.Information("{@Response}", inbox.Receive(TimeSpan.FromHours(1)));
+                inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", $"Succeeded step {next}-2", new[]{"hooo"}, progress: 0.3 ) );
+                Log.Information( "{@Response}", inbox.Receive( TimeSpan.FromHours( value: 1 ) ) );
 
-            Console.ReadLine();
+                inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", $"Succeeded step {next}-3", new [] {"hoooooo"}, progress: 0.7 ) );
+                Log.Information( "{@Response}", inbox.Receive( TimeSpan.FromHours( value: 1 ) ) );
 
+                inbox.Send( region, new Job.FinishScriptStep( "Job-001", "success", $"Succeeded step {next}-4", new string [0], progress: 0.9 ) );
+                Log.Information( "{@Response}", inbox.Receive( TimeSpan.FromHours( value: 1 ) ) );
+
+                Console.ReadLine();
+            }
         }
 
         private static string ReadAllResourceText( string resourceName )
         {
             var assembly = typeof(Program).Assembly;
-            using ( var reader = new StreamReader(assembly.GetManifestResourceStream(typeof(Program), resourceName)) )
+            using ( var reader = new StreamReader( assembly.GetManifestResourceStream( typeof(Program), resourceName ) ) )
             {
                 return reader.ReadToEnd();
             }
         }
+
+        #endregion
     }
 }
