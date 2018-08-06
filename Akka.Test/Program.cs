@@ -7,6 +7,7 @@ using Akka.Cluster.Sharding;
 using Akka.Configuration;
 using Akka.Persistence.EventStore;
 using Akka.Persistence.MongoDb;
+using Akka.Persistence.Query;
 using Akka.Test.Domain.Tasks;
 using Serilog;
 
@@ -23,6 +24,7 @@ akka {
     stdout-loglevel = DEBUG
     loggers=[""Akka.Logger.Serilog.SerilogLogger, Akka.Logger.Serilog""]
 
+//    actor.serialize-messages = on
     actor.debug {
         receive = true
         autoreceive = true
@@ -31,6 +33,7 @@ akka {
         unhandled = true
         fsm = true
         router-misconfiguration = true
+        serialize-messages = true
     }
 
     log-dead-letters-during-shutdown = true
@@ -50,9 +53,10 @@ akka {
 
         journal.plugin = ""akka.persistence.journal.eventstore""
         journal.eventstore.host = ""tcp://tom-server:1113""
+        journal.eventstore.host = ""tcp://by1-woiisqa-02:1113""
         journal.eventstore.username = test-o-matic
         journal.eventstore.password = ""2wsx#EDC""
-        journal.eventstore.prefix = akka-
+        journal.eventstore.prefix = akka2-
 
         journal.auto-start-journals = []
 
@@ -79,10 +83,10 @@ akka {
     }
 
     actor : {
-      serializers : {
+      serializers {
         akka-sharding : ""Akka.Cluster.Sharding.Serialization.ClusterShardingMessageSerializer, Akka.Cluster.Sharding""
       }
-      serialization-bindings : {
+      serialization-bindings {
         ""Akka.Cluster.Sharding.IClusterShardingSerializable, Akka.Cluster.Sharding"" : akka-sharding
       }
       serialization-identifiers : {
@@ -117,16 +121,16 @@ akka {
                 // .WithFallback( persistenceConfig )
                 ;
 
-            var v = config.GetConfig( "akka.actor.serializers" );
-
             Log.Debug( "{Config}", config.ToString( includeFallback: true ) );
-            Log.Debug( "{Config}", shardingConfig.ToString( includeFallback: true ) );
 
             using ( var system = ActorSystem.Create( "akka-test", config ) )
             {
 
                 // MongoDbPersistence.Get( system );
                 EventStorePersistence.Get( system );
+
+                var queries = PersistenceQuery.Get( system ).ReadJournalFor<IEventsByTagQuery>("");
+
 
                 var inbox = Inbox.Create( system );
 

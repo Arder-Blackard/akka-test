@@ -9,24 +9,15 @@ using Akka.Persistence.Journal;
 using EventStore.ClientAPI;
 using EventStore.ClientAPI.SystemData;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 
 namespace Akka.Persistence.EventStore.Journal
 {
     public class EventStoreJournal : AsyncWriteJournal
     {
-
-
-
-        /// <summary>
-        ///     Header storing the event object CLR type.
-        /// </summary>
-        private const string EventClrTypeHeader = "EventClrType";
-
-        private readonly EventStoreJournalSettings _settings;
+        private const long ReadPageSize = 50;
         private readonly JsonSerializerSettings _serializerSettings;
-
-        private Lazy<IEventStoreConnection> EventStoreConnection { get; set; }
+        private readonly EventStoreJournalSettings _settings;
+        private Lazy<IEventStoreConnection> _eventStoreConnection;
 
         public EventStoreJournal()
         {
@@ -36,10 +27,63 @@ namespace Akka.Persistence.EventStore.Journal
         }
 
         /// <inheritdoc />
+        public override async Task ReplayMessagesAsync( IActorContext context,
+                                                        string persistenceId,
+                                                        long fromSequenceNr,
+                                                        long toSequenceNr,
+                                                        long max,
+                                                        Action<IPersistentRepresentation> recoveryCallback )
+        {
+            var streamId = StreamIdFromPersistenceId( persistenceId );
+
+            var sliceStart = fromSequenceNr - 1;
+            StreamEventsSlice currentSlice;
+
+            do
+            {
+                var sliceCount = sliceStart + ReadPageSize < toSequenceNr
+                                     ? ReadPageSize
+                                     : toSequenceNr - sliceStart;
+
+                currentSlice = await _eventStoreConnection.Value.ReadStreamEventsForwardAsync( streamId, sliceStart, (int) sliceCount, resolveLinkTos: false );
+
+                switch ( currentSlice.Status )
+                {
+                    case SliceReadStatus.StreamNotFound:
+                        return;
+                    case SliceReadStatus.StreamDeleted:
+                        throw new InvalidOperationException( $"Stream {streamId} was deleted" );
+                }
+
+                foreach ( var @event in currentSlice.Events )
+                {
+                    var persistent = DeserializeEvent( @event.OriginalEvent, context.Sender );
+                    recoveryCallback( persistent );
+                }
+
+                sliceStart = currentSlice.NextEventNumber;
+            } while ( currentSlice.NextEventNumber < toSequenceNr && !currentSlice.IsEndOfStream );
+        }
+
+        /// <inheritdoc />
+        public override async Task<long> ReadHighestSequenceNrAsync( string persistenceId, long fromSequenceNr )
+        {
+            var streamId = StreamIdFromPersistenceId( persistenceId );
+
+            var slice = await _eventStoreConnection.Value.ReadEventAsync( streamId, StreamPosition.End, resolveLinkTos: false );
+            if ( slice.Status == EventReadStatus.NoStream || slice.Status == EventReadStatus.NotFound )
+            {
+                return 0;
+            }
+
+            return slice.Event.Value.OriginalEventNumber + 1;
+        }
+
+        /// <inheritdoc />
         protected override void PreStart()
         {
             base.PreStart();
-            EventStoreConnection = new Lazy<IEventStoreConnection>( () =>
+            _eventStoreConnection = new Lazy<IEventStoreConnection>( () =>
             {
                 var connectionSettings = ConnectionSettings.Create()
                                                            .SetDefaultUserCredentials( new UserCredentials( _settings.Username, _settings.Password ) )
@@ -49,7 +93,7 @@ namespace Akka.Persistence.EventStore.Journal
                     // .KeepRetrying()
                     ;
 
-                var eventStoreConnection = global::EventStore.ClientAPI.EventStoreConnection.Create( connectionSettings, new Uri( _settings.Host ) );
+                var eventStoreConnection = EventStoreConnection.Create( connectionSettings, new Uri( _settings.Host ) );
                 eventStoreConnection.ConnectAsync().Wait();
 
                 return eventStoreConnection;
@@ -57,64 +101,8 @@ namespace Akka.Persistence.EventStore.Journal
         }
 
         /// <inheritdoc />
-        public override async Task ReplayMessagesAsync( IActorContext context,
-                                                  string persistenceId,
-                                                  long fromSequenceNr,
-                                                  long toSequenceNr,
-                                                  long max,
-                                                  Action<IPersistentRepresentation> recoveryCallback )
-        {
-            var connection = EventStoreConnection.Value;
-            var streamId = StreamIdFromPersistenceId(persistenceId);
-
-            var sliceStart = fromSequenceNr - 1;
-            StreamEventsSlice currentSlice;
-
-            long ReadPageSize = 50;
-            do
-            {
-                var sliceCount = sliceStart + ReadPageSize < toSequenceNr ? ReadPageSize : (toSequenceNr - sliceStart);
-                currentSlice = await connection.ReadStreamEventsForwardAsync(streamId, sliceStart, (int) sliceCount, resolveLinkTos: false);
-
-                if (currentSlice.Status == SliceReadStatus.StreamNotFound)
-                {
-                    return;
-                }
-
-                if (currentSlice.Status == SliceReadStatus.StreamDeleted)
-                {
-                    throw new InvalidOperationException( $"Stream {streamId} was deleted" );
-                }
-
-                sliceStart = currentSlice.NextEventNumber;
-
-                foreach ( var @event in currentSlice.Events )
-                {
-                    var persistent = Deserialize( @event.OriginalEvent, context.Sender );
-                    recoveryCallback(persistent);
-                }
-
-            } while (currentSlice.NextEventNumber < toSequenceNr && !currentSlice.IsEndOfStream);
-
-        }
-
-        /// <inheritdoc />
-        public override async Task<long> ReadHighestSequenceNrAsync( string persistenceId, long fromSequenceNr )
-        {
-            var connection = EventStoreConnection.Value;
-            var streamId = StreamIdFromPersistenceId( persistenceId );
-
-            var slice = await connection.ReadEventAsync( streamId, StreamPosition.End, resolveLinkTos: false );
-            if ( slice.Status == EventReadStatus.NoStream || slice.Status == EventReadStatus.NotFound )
-                return 0;
-
-            return slice.Event.Value.OriginalEventNumber + 1;
-        }
-
-        /// <inheritdoc />
         protected override async Task<IImmutableList<Exception>> WriteMessagesAsync( IEnumerable<AtomicWrite> messages )
         {
-            var connection = EventStoreConnection.Value;
             var messageGroups = messages.GroupBy( m => m.PersistenceId );
 
             var writeTasks = messageGroups.Select( group =>
@@ -126,22 +114,24 @@ namespace Akka.Persistence.EventStore.Journal
 
                 var events = group.SelectMany( message => from persistent in (IImmutableList<IPersistentRepresentation>) message.Payload
                                                           orderby persistent.SequenceNr
-                                                          select ToEventData(persistent ))
+                                                          select ToEventData( persistent ) )
                                   .ToArray();
 
-                return connection.AppendToStreamAsync( streamId, lowerSequenceId - 2, events );
+                return _eventStoreConnection.Value.AppendToStreamAsync( streamId, lowerSequenceId - 2, events );
             } ).ToArray();
 
             return await Task.Factory.ContinueWhenAll( writeTasks, tasks => tasks.Select( t => t.IsFaulted ? TryUnwrapException( t.Exception ) : null ).ToImmutableList() );
         }
 
-        private static Persistent Deserialize( RecordedEvent eventStoreEvent, IActorRef sender )
+        /// <inheritdoc />
+        protected override Task DeleteMessagesToAsync( string persistenceId, long toSequenceNr ) => throw new NotImplementedException();
+
+        private Persistent DeserializeEvent( RecordedEvent eventStoreEvent, IActorRef sender )
         {
             var metadata = JsonConvert.DeserializeObject<EventMetadata>( Encoding.UTF8.GetString( eventStoreEvent.Metadata ) );
             var payloadTypeName = metadata.PayloadType;
             var type = Type.GetType( payloadTypeName );
-            var payload = JsonConvert.DeserializeObject( Encoding.UTF8.GetString( eventStoreEvent.Data ), type );
-
+            var payload = JsonConvert.DeserializeObject( Encoding.UTF8.GetString( eventStoreEvent.Data ), type, _serializerSettings );
 
             return new Persistent( payload, eventStoreEvent.EventNumber + 1, metadata.PersistenceId, metadata.Manifest, metadata.IsDeleted, sender, metadata.WriterGuid );
         }
@@ -150,7 +140,7 @@ namespace Akka.Persistence.EventStore.Journal
         ///     Converts a <paramref name="persistent" /> object to an EventStore representation.
         /// </summary>
         /// <returns>An EventStore event representation ready to be written to a stream.</returns>
-        protected EventData ToEventData( IPersistentRepresentation persistent )
+        private EventData ToEventData( IPersistentRepresentation persistent )
         {
             var json = JsonConvert.SerializeObject( persistent.Payload, _serializerSettings );
             var jsonBytes = Encoding.UTF8.GetBytes( json );
@@ -162,7 +152,7 @@ namespace Akka.Persistence.EventStore.Journal
                 PersistenceId = persistent.PersistenceId,
                 SequenceNr = persistent.SequenceNr,
                 WriterGuid = persistent.WriterGuid,
-                PayloadType = persistent.Payload.GetType().FullName
+                PayloadType = FormatPayloadTypeName( persistent.Payload.GetType() )
             };
 
             var metadataBytes = Encoding.UTF8.GetBytes( JsonConvert.SerializeObject( metadata, _serializerSettings ) );
@@ -171,10 +161,9 @@ namespace Akka.Persistence.EventStore.Journal
             return new EventData( Guid.NewGuid(), typeName, isJson: true, data: jsonBytes, metadata: metadataBytes );
         }
 
-        /// <inheritdoc />
-        protected override Task DeleteMessagesToAsync( string persistenceId, long toSequenceNr ) => throw new NotImplementedException();
+        private static string FormatPayloadTypeName( Type type ) => $"{type.FullName}, {type.Assembly.GetName().Name}";
 
-        private string StreamIdFromPersistenceId( string persistenceId ) => _settings.Prefix + persistenceId.Replace( '/', '_' );
+        private string StreamIdFromPersistenceId( string persistenceId ) => _settings.Prefix + persistenceId.Replace( oldChar: '/', newChar: '_' );
 
         private static string GetEventTypeName( object @event )
         {
@@ -185,7 +174,10 @@ namespace Akka.Persistence.EventStore.Journal
                        : typeName;
         }
 
-        private class EventMetadata
+        /// <summary>
+        ///     Describes an event metadata.
+        /// </summary>
+        private sealed class EventMetadata
         {
             public string Manifest { get; set; }
             public bool IsDeleted { get; set; }
